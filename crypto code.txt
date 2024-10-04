@@ -1,0 +1,154 @@
+import numpy as np
+from numpy.polynomial import polynomial as poly
+import mysql.connector
+import pickle
+
+def polymul(x, y, modulus, poly_mod):
+
+    return np.int64(
+        np.round(poly.polydiv(poly.polymul(x, y) % modulus, poly_mod)[1] % modulus)
+    )
+
+
+def polyadd(x, y, modulus, poly_mod):
+
+    return np.int64(
+        np.round(poly.polydiv(poly.polyadd(x, y) % modulus, poly_mod)[1] % modulus)
+    )
+
+def gen_binary_poly(size):
+
+    return np.random.randint(0, 2, size, dtype=np.int64)
+
+
+def gen_uniform_poly(size, modulus):
+
+    return np.random.randint(0, modulus, size, dtype=np.int64)
+
+
+def gen_normal_poly(size):
+
+    return np.int64(np.random.normal(0, 2, size=size))
+
+
+def keygen(size, modulus, poly_mod):
+
+    sk = gen_binary_poly(size)
+    a = gen_uniform_poly(size, modulus)
+    e = gen_normal_poly(size)
+    b = polyadd(polymul(-a, sk, modulus, poly_mod), -e, modulus, poly_mod)
+    return (b, a), sk
+
+
+def encrypt(pk, size, q, t, poly_mod, pt):
+
+    m = np.array([pt] + [0] * (size - 1), dtype=np.int64) % t
+    delta = q // t
+    scaled_m = delta * m  % q
+    e1 = gen_normal_poly(size)
+    e2 = gen_normal_poly(size)
+    u = gen_binary_poly(size)
+    ct0 = polyadd(
+            polyadd(
+                polymul(pk[0], u, q, poly_mod),
+                e1, q, poly_mod),
+            scaled_m, q, poly_mod
+        )
+    ct1 = polyadd(
+            polymul(pk[1], u, q, poly_mod),
+            e2, q, poly_mod
+        )
+    return (ct0, ct1)
+
+
+def decrypt(sk, size, q, t, poly_mod, ct):
+
+    scaled_pt = polyadd(
+            polymul(ct[1], sk, q, poly_mod),
+            ct[0], q, poly_mod
+        )
+    decrypted_poly = np.round(scaled_pt * t / q) % t
+    return int(decrypted_poly[0])
+
+
+def add_plain(ct, pt, q, t, poly_mod):
+
+    size = len(poly_mod) - 1
+    m = np.array([pt] + [0] * (size - 1), dtype=np.int64) % t
+    delta = q // t
+    scaled_m = delta * m  % q
+    new_ct0 = polyadd(ct[0], scaled_m, q, poly_mod)
+    return (new_ct0, ct[1])
+
+def mul_plain(ct, pt, q, t, poly_mod):
+
+    size = len(poly_mod) - 1
+    m = np.array([pt] + [0] * (size - 1), dtype=np.int64) % t
+    new_c0 = polymul(ct[0], m, q, poly_mod)
+    new_c1 = polymul(ct[1], m, q, poly_mod)
+    return (new_c0, new_c1)
+
+
+n = 2**8
+q = 2**15
+t = 2**8
+poly_mod = np.array([1] + [0] * (n - 1) + [1])
+
+pk, sk = keygen(n, q, poly_mod)
+
+mydb = mysql.connector.connect(
+  host="localhost",
+  user="root",
+  password="Krrish12234#@!",
+  database="emp_data"
+)
+
+mycursor = mydb.cursor()
+mycursor.execute("SELECT salary_in_thousand FROM emp_data_table")
+
+salaries = mycursor.fetchall()
+encrypted_salaries = []
+for salary in salaries:
+    encrypted_salaries.append(encrypt(pk, n, q, t, poly_mod, salary[0]))
+
+# for encrypted_salary in encrypted_salaries:
+#     updated_encrypted_salary = add_plain(encrypted_salary, 10, q, t, poly_mod)
+#     decrypted_salary = decrypt(sk, n, q, t, poly_mod, updated_encrypted_salary)
+#     print("Decrypted salary:", decrypted_salary)
+
+for salary in salaries:
+    encrypted_salary = encrypt(pk, n, q, t, poly_mod, salary[0])
+    # print("inital value encrypted",encrypted_salary)
+    serialized_encrypted_salary = pickle.dumps(encrypted_salary)
+    sql_update = "UPDATE emp_data_table SET encrypted_salary = %s WHERE salary_in_thousand = %s"
+    mycursor.execute(sql_update, (serialized_encrypted_salary, salary[0]))
+mydb.commit()
+
+sql_select = "SELECT emp_id, encrypted_salary FROM emp_data_table"
+mycursor.execute(sql_select)
+rows = mycursor.fetchall()
+
+for row in rows:
+    emp_id, serialized_encrypted_salary = row
+    encrypted_salary = pickle.loads(serialized_encrypted_salary)
+    print("encrypted salary: ",encrypted_salary)
+    updated_encrypted_salary = add_plain(encrypted_salary, 20, q, t, poly_mod)
+    decrypted_salary = decrypt(sk, n, q, t, poly_mod, updated_encrypted_salary)
+    serialized_updated_encrypted_salary = pickle.dumps(updated_encrypted_salary)
+    # print("Serialized encrypted salary: ",serialized_updated_encrypted_salary)
+    sql_update = "UPDATE emp_data_table SET encrypted_salary = %s WHERE emp_id = %s"
+    mycursor.execute(sql_update, (serialized_updated_encrypted_salary, emp_id))
+mydb.commit()
+
+#printing result
+print("SALARY AFTER PERFORMING UPDATATION ")
+sql_select = "SELECT emp_id, encrypted_salary FROM emp_data_table"
+mycursor.execute(sql_select)
+rows = mycursor.fetchall()
+for row in rows:
+    emp_id, serialized_encrypted_salary = row
+    encrypted_salary = pickle.loads(serialized_encrypted_salary)
+    decrypted_salary = decrypt(sk, n, q, t, poly_mod, encrypted_salary)
+    print(decrypted_salary)
+
+mydb.commit()
